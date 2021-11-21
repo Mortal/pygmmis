@@ -9,7 +9,10 @@ logger = logging.getLogger("pygmmis")
 
 # set up multiprocessing
 import multiprocessing
-import parmap
+
+
+def starmap(fn, arglist, *args, **kwargs):
+    return [fn(*a, *args, **kwargs) for a in arglist]
 
 
 def createShared(a, dtype=ctypes.c_double):
@@ -1244,7 +1247,7 @@ def _Estep(
     H = np.zeros(len(data), dtype="bool")
 
     k = 0
-    for log_p[k], U[k], T_inv[k] in parmap.starmap(
+    for log_p[k], U[k], T_inv[k] in starmap(
         _Esum,
         zip(xrange(gmm.K), U),
         gmm,
@@ -1380,7 +1383,7 @@ def _Mstep(
     # NOTE: in a partial run, could work on changeable components only;
     # however, there seem to be side effects or race conditions
     k = 0
-    for A[k], M[k, :], C[k, :, :] in parmap.starmap(
+    for A[k], M[k, :], C[k, :, :] in starmap(
         _Msums,
         zip(xrange(gmm.K), U, log_p, T_inv),
         gmm,
