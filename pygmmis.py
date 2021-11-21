@@ -1,78 +1,16 @@
 from __future__ import division
 import numpy as np
-import scipy.special, scipy.stats
-import ctypes
+import scipy.special
+import scipy.stats
 
 import logging
 
 logger = logging.getLogger("pygmmis")
 
-# set up multiprocessing
-import multiprocessing
-
 
 def starmap(fn, arglist, *args, **kwargs):
     return [fn(*a, *args, **kwargs) for a in arglist]
 
-
-def createShared(a, dtype=ctypes.c_double):
-    """Create a shared array to be used for multiprocessing's processes.
-
-    Taken from http://stackoverflow.com/questions/5549190/
-
-    Works only for float, double, int, long types (e.g. no bool).
-
-    Args:
-        numpy array, arbitrary shape
-
-    Returns:
-        numpy array whose container is a multiprocessing.Array
-    """
-    shared_array_base = multiprocessing.Array(dtype, a.size)
-    shared_array = np.ctypeslib.as_array(shared_array_base.get_obj())
-    shared_array[:] = a.flatten()
-    shared_array = shared_array.reshape(a.shape)
-    return shared_array
-
-
-# this is to allow multiprocessing pools to operate on class methods:
-# https://gist.github.com/bnyeggen/1086393
-def _pickle_method(method):
-    func_name = method.im_func.__name__
-    obj = method.im_self
-    cls = method.im_class
-    if func_name.startswith("__") and not func_name.endswith(
-        "__"
-    ):  # deal with mangled names
-        cls_name = cls.__name__.lstrip("_")
-        func_name = "_" + cls_name + func_name
-    return _unpickle_method, (func_name, obj, cls)
-
-
-def _unpickle_method(func_name, obj, cls):
-    for cls in cls.__mro__:
-        try:
-            func = cls.__dict__[func_name]
-        except KeyError:
-            pass
-        else:
-            break
-    return func.__get__(obj, cls)
-
-
-import types
-
-# python 2 -> 3 adjustments
-try:
-    import copy_reg
-except ImportError:
-    import copyreg as copy_reg
-copy_reg.pickle(types.MethodType, _pickle_method, _unpickle_method)
-
-try:
-    xrange
-except NameError:
-    xrange = range
 
 # Blantant copy from Erin Sheldon's esutil
 # https://github.com/esheldon/esutil/blob/master/esutil/numpy_util.py
@@ -141,7 +79,7 @@ def match1d(arr1input, arr2input, presorted=False):
     return sub1, sub2
 
 
-def logsum(logX, axis=0):
+def logsum(logX, axis):
     """Computes log of the sum along give axis from the log of the summands.
 
     This method tries hard to avoid over- or underflow.
@@ -163,7 +101,7 @@ def logsum(logX, axis=0):
     overflow = np.log(floatinfo.max) - logX.max(axis=axis) - np.log(logX.shape[axis])
     c = np.where(underflow < overflow, underflow, overflow)
     # adjust the shape of c for addition with logX
-    c_shape = [slice(None) for i in xrange(len(logX.shape))]
+    c_shape = [slice(None) for i in range(len(logX.shape))]
     c_shape[axis] = None
     return np.log(np.exp(logX + c[tuple(c_shape)]).sum(axis=axis)) - c
 
@@ -297,31 +235,8 @@ class GMM(object):
         else:
             return np.exp(self.logL(coords, covar=covar))
 
-    def _mp_chunksize(self):
-        # find how many components to distribute over available threads
-        cpu_count = multiprocessing.cpu_count()
-        chunksize = max(1, self.K // cpu_count)
-        n_chunks = min(cpu_count, self.K // chunksize)
-        return n_chunks, chunksize
-
-    def _get_chunks(self):
-        # split all component in ideal-sized chunks
-        n_chunks, chunksize = self._mp_chunksize()
-        left = self.K - n_chunks * chunksize
-        chunks = []
-        n = 0
-        for i in xrange(n_chunks):
-            n_ = n + chunksize
-            if left > i:
-                n_ += 1
-            chunks.append((n, n_))
-            n = n_
-        return chunks
-
     def logL(self, coords, covar=None):
         """Log-likelihood of coords given all (i.e. the sum of) GMM components
-
-        Distributes computation over all threads on the machine.
 
         If covar is None, this method returns
             log(sum_k(p(x | k)))
@@ -336,28 +251,11 @@ class GMM(object):
         Returns:
             numpy array (1,) or (N, 1) log(L), depending on shape of data
         """
-        # Instead log p (x | k) for each k (which is huge)
-        # compute it in stages: first for each chunk, then sum over all chunks
-        pool = multiprocessing.Pool()
-        chunks = self._get_chunks()
-        results = [
-            pool.apply_async(self._logsum_chunk, (chunk, coords, covar))
-            for chunk in chunks
-        ]
-        log_p_y_chunk = []
-        for r in results:
-            log_p_y_chunk.append(r.get())
-        pool.close()
-        pool.join()
-        return logsum(np.array(log_p_y_chunk))  # sum over all chunks = all k
-
-    def _logsum_chunk(self, chunk, coords, covar=None):
-        # helper function to reduce the memory requirement of logL
-        log_p_y_k = np.empty((chunk[1] - chunk[0], len(coords)))
-        for i in xrange(chunk[1] - chunk[0]):
-            k = chunk[0] + i
+        log_p_y_k = np.empty((self.K, len(coords)))
+        for i in range(self.K):
+            k = i
             log_p_y_k[i, :] = self.logL_k(k, coords, covar=covar)
-        return logsum(log_p_y_k)
+        return logsum(log_p_y_k, axis=0)
 
     def logL_k(self, k, coords, covar=None, chi2_only=False):
         """Log-likelihood of coords given only component k.
@@ -554,7 +452,7 @@ def initFromKMeans(gmm, data, covar=None, rng=np.random):
     from scipy.cluster.vq import kmeans2
 
     center, label = kmeans2(data, gmm.K)
-    for k in xrange(gmm.K):
+    for k in range(gmm.K):
         mask = label == k
         gmm.amp[k] = mask.sum() / len(data)
         gmm.mean[k, :] = data[mask].mean(axis=0)
@@ -630,7 +528,7 @@ def fit(
     # to effectively zero
     missing = np.isnan(data)
     if missing.any():
-        data_ = createShared(data.copy())
+        data_ = data.copy()
         data_[missing] = 0  # value does not matter as long as it's not nan
         if covar is None:
             covar = np.zeros((gmm.D, gmm.D))
@@ -642,20 +540,20 @@ def fit(
                     covar_callback_default, default=np.zeros((gmm.D, gmm.D))
                 )
         if covar.shape == (gmm.D, gmm.D):
-            covar_ = createShared(np.tile(covar, (N, 1, 1)))
+            covar_ = np.tile(covar, (N, 1, 1))
         else:
-            covar_ = createShared(covar.copy())
+            covar_ = covar.copy()
 
         large = 1e10
         for d in range(gmm.D):
             covar_[missing[:, d], d, d] += large
             covar_[missing[:, d], d, d] += large
     else:
-        data_ = createShared(data.copy())
+        data_ = data.copy()
         if covar is None or covar.shape == (gmm.D, gmm.D):
             covar_ = covar
         else:
-            covar_ = createShared(covar.copy())
+            covar_ = covar.copy()
 
     # init components
     if init_method.lower() not in ["random", "minmax", "kmeans", "none"]:
@@ -675,17 +573,13 @@ def fit(
             "covar is set, but covar_callback is None: imputation samples inconsistent"
         )
 
-    # set up pool
-    pool = multiprocessing.Pool()
-    n_chunks, chunksize = gmm._mp_chunksize()
-
     # containers
     # precautions for cases when some points are treated as outliers
     # and not considered as belonging to any component
-    log_S = createShared(np.zeros(N))  # S = sum_k p(x|k)
-    log_p = [[] for k in xrange(gmm.K)]  # P = p(x|k) for x in U[k]
-    T_inv = [None for k in xrange(gmm.K)]  # T = covar(x) + gmm.covar[k]
-    U = [None for k in xrange(gmm.K)]  # U = {x close to k}
+    log_S = np.zeros(N)  # S = sum_k p(x|k)
+    log_p = [[] for k in range(gmm.K)]  # P = p(x|k) for x in U[k]
+    T_inv = [None for k in range(gmm.K)]  # T = covar(x) + gmm.covar[k]
+    U = [None for k in range(gmm.K)]  # U = {x close to k}
     p_bg = None
     if background is not None:
         gmm.amp *= 1 - background.amp  # GMM amp + BG amp = 1
@@ -706,7 +600,7 @@ def fit(
     if frozen is not None:
         if all(isinstance(item, int) for item in frozen):
             changeable["amp"] = changeable["mean"] = changeable["covar"] = np.in1d(
-                xrange(gmm.K), frozen, assume_unique=True, invert=True
+                range(gmm.K), frozen, assume_unique=True, invert=True
             )
         elif (
             hasattr(frozen, "keys")
@@ -716,52 +610,43 @@ def fit(
         ):
             if "amp" in frozen.keys():
                 changeable["amp"] = np.in1d(
-                    xrange(gmm.K), frozen["amp"], assume_unique=True, invert=True
+                    range(gmm.K), frozen["amp"], assume_unique=True, invert=True
                 )
             if "mean" in frozen.keys():
                 changeable["mean"] = np.in1d(
-                    xrange(gmm.K), frozen["mean"], assume_unique=True, invert=True
+                    range(gmm.K), frozen["mean"], assume_unique=True, invert=True
                 )
             if "covar" in frozen.keys():
                 changeable["covar"] = np.in1d(
-                    xrange(gmm.K), frozen["covar"], assume_unique=True, invert=True
+                    range(gmm.K), frozen["covar"], assume_unique=True, invert=True
                 )
         else:
             raise NotImplementedError(
                 "frozen should be list of indices or dictionary with keys in ['amp','mean','covar']"
             )
 
-    try:
-        log_L, N, N2 = _EM(
-            gmm,
-            log_p,
-            U,
-            T_inv,
-            log_S,
-            data_,
-            covar=covar_,
-            R=R,
-            sel_callback=sel_callback,
-            oversampling=oversampling,
-            covar_callback=covar_callback,
-            w=w,
-            pool=pool,
-            chunksize=chunksize,
-            cutoff=cutoff,
-            background=background,
-            p_bg=p_bg,
-            changeable=changeable,
-            miniter=miniter,
-            maxiter=maxiter,
-            tol=tol,
-            rng=rng,
-        )
-    except Exception:
-        # cleanup
-        pool.close()
-        pool.join()
-        del data_, covar_, log_S
-        raise
+    log_L, N, N2 = _EM(
+        gmm,
+        log_p,
+        U,
+        T_inv,
+        log_S,
+        data_,
+        covar=covar_,
+        R=R,
+        sel_callback=sel_callback,
+        oversampling=oversampling,
+        covar_callback=covar_callback,
+        w=w,
+        cutoff=cutoff,
+        background=background,
+        p_bg=p_bg,
+        changeable=changeable,
+        miniter=miniter,
+        maxiter=maxiter,
+        tol=tol,
+        rng=rng,
+    )
 
     # should we try to improve by split'n'merge of components?
     # if so, keep backup copy
@@ -777,10 +662,10 @@ def fit(
             gmm_.amp[:] = gmm.amp[:]
             gmm_.mean[:] = gmm.mean[:, :]
             gmm_.covar[:, :, :] = gmm.covar[:, :, :]
-            U_ = [U[k].copy() for k in xrange(gmm.K)]
+            U_ = [U[k].copy() for k in range(gmm.K)]
 
             changing, cleanup = _findSNMComponents(
-                gmm, U, log_p, log_S, N + N2, pool=pool, chunksize=chunksize
+                gmm, U, log_p, log_S, N + N2
             )
             logger.info("merging %d and %d, splitting %d" % tuple(changing))
 
@@ -801,7 +686,7 @@ def fit(
             # Effectively, partial runs are as expensive as full runs.
 
             changeable["amp"] = changeable["mean"] = changeable["covar"] = np.in1d(
-                xrange(gmm.K), changing, assume_unique=True
+                range(gmm.K), changing, assume_unique=True
             )
             log_L_, N_, N2_ = _EM(
                 gmm,
@@ -816,8 +701,6 @@ def fit(
                 oversampling=oversampling,
                 covar_callback=covar_callback,
                 w=w,
-                pool=pool,
-                chunksize=chunksize,
                 cutoff=cutoff,
                 background=background,
                 p_bg=p_bg,
@@ -842,8 +725,6 @@ def fit(
                 oversampling=oversampling,
                 covar_callback=covar_callback,
                 w=w,
-                pool=pool,
-                chunksize=chunksize,
                 cutoff=cutoff,
                 background=background,
                 p_bg=p_bg,
@@ -868,9 +749,6 @@ def fit(
             log_L = log_L_
             split_n_merge -= 1
 
-    pool.close()
-    pool.join()
-    del data_, covar_, log_S
     return log_L, U
 
 
@@ -890,8 +768,6 @@ def _EM(
     background=None,
     p_bg=None,
     w=0,
-    pool=None,
-    chunksize=1,
     cutoff=None,
     miniter=1,
     maxiter=1000,
@@ -916,7 +792,7 @@ def _EM(
         shift_cutoff = chi2_cutoff(gmm.D, cutoff=0.1)
 
     if sel_callback is not None:
-        omega = createShared(sel_callback(data).astype("float"))
+        omega = sel_callback(data).astype("float")
         if np.any(omega == 0):
             logger.warning("Selection probability Omega = 0 for an observed sample.")
             logger.warning(
@@ -944,6 +820,7 @@ def _EM(
     if background is not None:
         bg_amp_ = background.amp
 
+    log_L = None
     while it < maxiter:  # limit loop in case of slow convergence
         log_L_, N, N2_, N0_ = _EMstep(
             gmm,
@@ -962,8 +839,6 @@ def _EM(
             background=background,
             p_bg=p_bg,
             w=w,
-            pool=pool,
-            chunksize=chunksize,
             cutoff=cutoff_nd,
             tol=tol,
             changeable=changeable,
@@ -989,6 +864,7 @@ def _EM(
 
         # convergence tests
         if it > miniter:
+            assert log_L is not None
             if sel_callback is None:
                 if np.abs(log_L_ - log_L) < tol * np.abs(log_L) and moved.size == 0:
                     log_L = log_L_
@@ -1057,8 +933,6 @@ def _EMstep(
     background=None,
     p_bg=None,
     w=0,
-    pool=None,
-    chunksize=1,
     cutoff=None,
     tol=1e-3,
     changeable=None,
@@ -1067,7 +941,7 @@ def _EMstep(
 ):
 
     # NOTE: T_inv (in fact (T_ik)^-1 for all samples i and components k)
-    # is very large and is unfortunately duplicated in the parallelized _Mstep.
+    # is very large and is unfortunately duplicated in _Mstep.
     # If memory is too limited, one can recompute T_inv in _Msums() instead.
     log_L = _Estep(
         gmm,
@@ -1081,8 +955,6 @@ def _EMstep(
         omega=omega,
         background=background,
         p_bg=p_bg,
-        pool=pool,
-        chunksize=chunksize,
         cutoff=cutoff,
         it=it,
     )
@@ -1096,8 +968,6 @@ def _EMstep(
         covar=covar,
         R=R,
         p_bg=p_bg,
-        pool=pool,
-        chunksize=chunksize,
     )
 
     A2 = M2 = C2 = B2 = N2 = 0
@@ -1127,24 +997,24 @@ def _EMstep(
             background=background,
             rng=rng,
         )
-        data2 = createShared(data2)
+        data2 = data2
         if not (covar2 is None or covar2.shape == (gmm.D, gmm.D)):
-            covar2 = createShared(covar2)
+            covar2 = covar2
 
         N0 = N0 / oversampling
-        U2 = [None for k in xrange(gmm.K)]
+        U2 = [None for k in range(gmm.K)]
 
         if len(data2) > 0:
             log_S2 = np.zeros(len(data2))
-            log_p2 = [[] for k in xrange(gmm.K)]
-            T2_inv = [None for k in xrange(gmm.K)]
+            log_p2 = [[] for k in range(gmm.K)]
+            T2_inv = [None for k in range(gmm.K)]
             R2 = None
             if background is not None:
                 p_bg2 = [None]
             else:
                 p_bg2 = None
 
-            log_L2 = _Estep(
+            _Estep(
                 gmm,
                 log_p2,
                 U2,
@@ -1156,8 +1026,6 @@ def _EMstep(
                 omega=None,
                 background=background,
                 p_bg=p_bg2,
-                pool=pool,
-                chunksize=chunksize,
                 cutoff=cutoff,
                 it=it,
             )
@@ -1171,8 +1039,6 @@ def _EMstep(
                 covar=covar2,
                 R=R2,
                 p_bg=p_bg2,
-                pool=pool,
-                chunksize=chunksize,
             )
 
             # normalize for oversampling
@@ -1232,8 +1098,6 @@ def _Estep(
     omega=None,
     background=None,
     p_bg=None,
-    pool=None,
-    chunksize=1,
     cutoff=None,
     it=0,
     rng=np.random,
@@ -1249,14 +1113,12 @@ def _Estep(
     k = 0
     for log_p[k], U[k], T_inv[k] in starmap(
         _Esum,
-        zip(xrange(gmm.K), U),
+        zip(range(gmm.K), U),
         gmm,
         data,
         covar,
         R,
         cutoff,
-        pool=pool,
-        chunksize=chunksize,
     ):
         log_S[U[k]] += np.exp(log_p[k])  # actually S, not logS
         H[U[k]] = 1
@@ -1369,8 +1231,6 @@ def _Mstep(
     covar=None,
     R=None,
     p_bg=None,
-    pool=None,
-    chunksize=1,
 ):
 
     # save the M sums from observed data
@@ -1385,13 +1245,11 @@ def _Mstep(
     k = 0
     for A[k], M[k, :], C[k, :, :] in starmap(
         _Msums,
-        zip(xrange(gmm.K), U, log_p, T_inv),
+        zip(range(gmm.K), U, log_p, T_inv),
         gmm,
         data,
         R,
         log_S,
-        pool=pool,
-        chunksize=chunksize,
     ):
         k += 1
 
@@ -1410,22 +1268,19 @@ def _Msums(k, U_k, log_p_k, T_inv_k, gmm, data, R, log_S):
         return 0, 0, 0
 
     # get log_q_ik by dividing with S = sum_k p_ik
-    # NOTE:  this modifies log_p_k in place, but is only relevant
-    # within this method since the call is parallel and its arguments
-    # therefore don't get updated across components.
 
     # NOTE: reshape needed when U_k is None because of its
     # implicit meaning as np.newaxis
-    log_p_k -= log_S[U_k].reshape(log_p_k.size)
-    d = data[U_k].reshape((log_p_k.size, gmm.D))
+    log_q_ik = log_p_k - log_S[U_k].reshape(log_p_k.size)
+    d = data[U_k].reshape((log_q_ik.size, gmm.D))
     if R is not None:
-        R_ = R[U_k].reshape((log_p_k.size, gmm.D, gmm.D))
+        R_ = R[U_k].reshape((log_q_ik.size, gmm.D, gmm.D))
 
     # amplitude: A_k = sum_i q_ik
-    A_k = np.exp(logsum(log_p_k))
+    A_k = np.exp(logsum(log_q_ik, axis=0))
 
     # in fact: q_ik, but we treat sample index i silently everywhere
-    q_k = np.exp(log_p_k)
+    q_k = np.exp(log_q_ik)
 
     if R is None:
         d_m = d - gmm.mean[k]
@@ -1656,15 +1511,15 @@ def _JS(k, gmm, log_p, log_S, U, A):
     )
 
 
-def _findSNMComponents(gmm, U, log_p, log_S, N, pool=None, chunksize=1):
+def _findSNMComponents(gmm, U, log_p, log_S, N):
     # find those components that are most similar
     JM = np.zeros((gmm.K, gmm.K))
     # compute log_q (posterior for k given i), but use normalized probabilities
     # to allow for merging of empty components
-    log_q = [log_p[k] - log_S[U[k]] - np.log(gmm.amp[k]) for k in xrange(gmm.K)]
-    for k in xrange(gmm.K):
+    log_q = [log_p[k] - log_S[U[k]] - np.log(gmm.amp[k]) for k in range(gmm.K)]
+    for k in range(gmm.K):
         # don't need diagonal (can merge), and JM is symmetric
-        for j in xrange(k + 1, gmm.K):
+        for j in range(k + 1, gmm.K):
             # get index list for intersection of U of k and l
             # FIXME: match1d fails if either U is empty
             # SOLUTION: merge empty U, split another
@@ -1681,16 +1536,6 @@ def _findSNMComponents(gmm, U, log_p, log_S, N, pool=None, chunksize=1):
         merge_jk = np.argsort(gmm.amp)[:2]
         cleanup = True
 
-    # split the one whose p(x|k) deviate most from current Gaussian
-    # ask for the three worst components to avoid split being in merge_jk
-    """
-    JS = np.empty(gmm.K)
-    k = 0
-    A = gmm.amp * N
-    for JS[k] in \
-    parmap.map(_JS, xrange(gmm.K), gmm, log_p, log_S, U, A, pool=pool, chunksize=chunksize):
-        k += 1
-    """
     # get largest Eigenvalue, weighed by amplitude
     # Large EV implies extended object, which often is caused by coverving
     # multiple clusters. This happes also for almost empty components, which
@@ -1787,7 +1632,7 @@ def cv_fit(gmm, data, L=10, **kwargs):
 
     # to L-fold CV here, need to split covar too if set
     covar = kwargs.pop("covar", None)
-    for i in xrange(L):
+    for i in range(L):
         rng.set_state(rng_state)
         mask = np.arange(N) % L == i
         if covar is None or covar.shape == (gmm.D, gmm.D):
@@ -1810,7 +1655,7 @@ def cv_fit(gmm, data, L=10, **kwargs):
 def stack(gmms, weights):
     # build stacked model by combining all gmms and applying weights to amps
     stacked = GMM(K=0, D=gmms[0].D)
-    for m in xrange(len(gmms)):
+    for m in range(len(gmms)):
         stacked.amp = np.concatenate((stacked.amp[:], weights[m] * gmms[m].amp[:]))
         stacked.mean = np.concatenate((stacked.mean[:, :], gmms[m].mean[:, :]))
         stacked.covar = np.concatenate((stacked.covar[:, :, :], gmms[m].covar[:, :, :]))
@@ -1823,7 +1668,7 @@ def stack_fit(gmms, data, kwargs, L=10, tol=1e-5, rng=np.random):
     N = len(data)
     lcvs = np.empty((M, N))
 
-    for m in xrange(M):
+    for m in range(M):
         # run CV to get cross-validation likelihood
         rng_state = rng.get_state()
         lcvs[m, :] = cv_fit(gmms[m], data, L=L, **(kwargs[m]))
@@ -1842,7 +1687,7 @@ def stack_fit(gmms, data, kwargs, L=10, tol=1e-5, rng=np.random):
 
     while True and it < 20:
         log_p_k[:, :] = lcvs + np.log(beta)[:, None]
-        log_S[:] = logsum(log_p_k)
+        log_S[:] = logsum(log_p_k, axis=0)
         log_p_k[:, :] -= log_S
         beta[:] = np.exp(logsum(log_p_k, axis=1)) / N
         logL_ = log_S.mean()
