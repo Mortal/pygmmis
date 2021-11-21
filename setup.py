@@ -1,16 +1,16 @@
 from setuptools import setup
 
-long_description = open('README.md').read()
+long_description = open("README.md").read()
 
 setup(
     name="pygmmis",
-    version='1.2.1',
+    version="1.2.1",
     description="Gaussian mixture model for incomplete, truncated, and noisy data",
-    long_description = long_description,
-    long_description_content_type='text/markdown',
+    long_description=long_description,
+    long_description_content_type="text/markdown",
     author="Peter Melchior",
     author_email="peter.m.melchior@gmail.com",
-    license='MIT',
+    license="MIT",
     py_modules=["pygmmis"],
     url="https://github.com/pmelchior/pygmmis",
     classifiers=[
@@ -20,7 +20,7 @@ setup(
         "Intended Audience :: Science/Research",
         "Operating System :: OS Independent",
         "Programming Language :: Python",
-        "Topic :: Scientific/Engineering :: Information Analysis"
+        "Topic :: Scientific/Engineering :: Information Analysis",
     ],
-    install_requires=["numpy","scipy","parmap"]
+    install_requires=["numpy", "scipy", "parmap"],
 )
